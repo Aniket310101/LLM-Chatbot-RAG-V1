@@ -11,6 +11,7 @@ import { DocumentInterface } from '@langchain/core/documents';
 import { RunnableSequence, RunnablePassthrough } from '@langchain/core/runnables';
 
 export default class LLMService {
+    static convHistory: string[] = [];
     async injestDocument() {
         const rawData: string = await this.readTextFile('documents/scrimba-info.txt');
 
@@ -83,13 +84,13 @@ export default class LLMService {
 
     async generateQueryResponse(query: string) {
         // Standalone Prompt Chain
-        const standaloneQuestionTemplate = 'Given a question, convert it to a standalone question. question: {question} standalone question:'
+        const standaloneQuestionTemplate = 'Given a question and converstion history, convert it to the best possible standalone question. question: {question} conversation history: {convHistory} standalone question:';
         const standaloneQuestionPrompt = PromptTemplate.fromTemplate(standaloneQuestionTemplate);
         const standaloneQuestionChain = RunnableSequence.from([
             standaloneQuestionPrompt,
             LLMProvider.llmClient,
             new StringOutputParser(),
-        ])
+        ]);
 
         // Retriever Chain
         const retriever = this.getRetriever();
@@ -97,36 +98,42 @@ export default class LLMService {
             prevResult => prevResult.standalone_question,
             retriever,
             this.combineDocs,
-        ])
+        ]);
 
         // Answer Chain
-        const answerTemplate = `You are a helpful and enthusiastic support bot who can answer a given question about Scrimba based on the context provided. Try to find the answer in the context. If you really don't know the answer, say "I'm sorry, I don't know the answer to that." And direct the questioner to email help@scrimba.com. Don't try to make up an answer. Always speak as if you were chatting to a friend.
+        const answerTemplate = `You are a helpful and enthusiastic support bot who can answer a given question about Scrimba based on the context provided. Try to find the best answer from the conversation history and the provided context.
+        If you really don't know the answer, say "I'm sorry, I don't know the answer to that." And direct the questioner to email help@scrimba.com. Don't try to make up an answer. Always speak as if you were chatting to a friend.
             context: {context}
             question: {question}
-            answer: `
+            conversation history: {convHistory}
+            answer: `;
         const answerPrompt = PromptTemplate.fromTemplate(answerTemplate);
         const answerChain = RunnableSequence.from([
             answerPrompt,
             LLMProvider.llmClient,
             new StringOutputParser(),
-        ])
+        ]);
 
         const chain = RunnableSequence.from([
             {
                 standalone_question: standaloneQuestionChain,
-                original_input: new RunnablePassthrough()
+                original_input: new RunnablePassthrough(),
+                convHistory: new RunnablePassthrough()
             },
             {
                 context: retrieverChain,
-                question: ({ original_input }) => original_input.question
+                question: ({ original_input }) => original_input.question,
+                convHistory: ({ original_input }) => original_input.convHistory,
             },
             answerChain,
         ]);
 
         const response = await chain.invoke({
-            question: query
+            question: query,
+            convHistory: this.formatConvHistory(LLMService.convHistory),
         });
-
+        LLMService.convHistory.push(`Human: ${query}`);
+        LLMService.convHistory.push(`AI: ${response}`);
         return response;
     }
 
@@ -201,5 +208,9 @@ export default class LLMService {
             language: 'french'
         })
         return response;
+    }
+
+    private formatConvHistory(messages: string[]) {
+        return messages.join('\n');
     }
 }
